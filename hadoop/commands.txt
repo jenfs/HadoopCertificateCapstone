@@ -1,0 +1,127 @@
+#hadoop streaming to remove empty lines, mentioned in 'Data Cleaning' section.
+hadoop jar hadoop-streaming.jar \
+-D mapred.reduce.tasks=0 \
+-input hdfs://quickstart.cloudera:8020/twitter/raw \
+-output hdfs://quickstart.cloudera:8020/twitter/stripped \
+-mapper "sed '/^$/d'"
+
+
+
+#following are hive commands mentioned in 'Data Inspection' section.
+
+add jar /home/cloudera/Downloads/hive-serdes-1.0-SNAPSHOT.jar;   
+
+create database capstone;
+
+use capstone;
+
+CREATE EXTERNAL TABLE capstone.tweets (
+  id BIGINT,
+  created_at STRING,
+  text STRING,
+  source STRING,
+  in_reply_to_screen_name STRING,
+  in_reply_to_status_id BIGINT,
+  in_reply_to_status_id_str STRING,
+  user STRUCT<
+    id:BIGINT,
+    location:STRING,
+    friends_count:INT,
+    followers_count:INT,
+    listed_count:INT,
+    statuses_count:INT,
+    favourites_count:INT,
+    verified:BOOLEAN,
+    created_at:STRING,
+    lang:STRING>,
+  geo STRUCT<
+    type:STRING,
+    coordinates:STRING>,
+  place STRUCT<
+    place_type:STRING,
+    name:STRING,
+    full_name:STRING,
+    country_code:STRING,
+    country:STRING>
+ 
+) 
+ROW FORMAT SERDE 'com.cloudera.hive.serde.JSONSerDe'
+LOCATION 'hdfs://quickstart.cloudera:8020/twitter/stripped';
+
+select count(*) from tweets;
+select count(*) from tweets where (in_reply_to_screen_name is not null and in_reply_to_screen_name != '')
+  or (in_reply_to_status_id is not null and in_reply_to_status_id != '')
+  or (in_reply_to_status_id_str is not null and in_reply_to_status_id_str != '');
+
+select geo.type, count(*) from tweets group by geo.type;
+select count(*) from tweets where geo.coordinates is not null;
+select place.country_code, count(*) from tweets group by place.country_code;
+
+select avg(length(text)) from tweets;
+
+
+create table capstone.tweets_filtered as
+  select id, text, (in_reply_to_screen_name is not null and in_reply_to_screen_name != '')
+  or (in_reply_to_status_id is not null and in_reply_to_status_id != '')
+  or (in_reply_to_status_id_str is not null and in_reply_to_status_id_str != '') as reply_tweet,
+  user.friends_count, user.followers_count, user.listed_count, user.statuses_count, user.favourites_count, user.verified,      
+  geo.coordinates,
+  place.country_code,
+  geo.coordinates is not null and place.country_code = 'US' as usable
+  from tweets
+  where geo.coordinates is not null and geo.coordinates != ''
+  and place.country_code is not null and place.country_code != '' and place.country_code = 'US';
+
+create table tweets_us_geo as select * from tweets_filtered where usable;
+
+
+insert overwrite directory '/twitter/filtered'
+select id, text, reply_tweet, 
+friends_count, followers_count, listed_count, 
+statuses_count, favourites_count, 
+verified, coordinates 
+from tweets_us_geo;
+
+
+
+#following is hive table used to generate stats mentioned in 'Obtaining a Happiness Lexicon'
+
+create external table capstone.unigram_lexicon
+    (unigram string,
+     score float,
+     pos_count int,
+     neg_count int)
+     row format delimited fields terminated by '\t'
+     location '/sentiment/unigrams';
+	 
+select mean(score) where score < 0;
+select mean(score where score > 0;
+
+
+#command to run MapReduce job
+hadoop jar /home/cloudera/Desktop/sentiment-analysis-0.1.jar jenfs.sentiment.twitter.SentimentScore /user/hive/warehouse/capstone.db/tweets_us_geo /sentiment/unigrams/unigrams-pmilexicon.txt /test/wordcount/output
+
+
+#hive commands mentioned in 'Sentiment Scores for Reply Tweets'
+
+create external table capstone.scored_tweets
+     (
+     id bigint,
+     reply_tweet boolean,
+     friends_count int,
+     followers_count int,
+     listed_count int,
+     statuses_count int,
+     favourites_count int,
+     verified boolean,
+     coordinates string,
+     happiness_score float)
+     row format delimited fields terminated by '\t'
+   location '/test/wordcount/output';
+
+   select reply_tweet, count(*), avg(happiness_score), 
+     stddev_pop(happiness_score), stddev_samp(happiness_score)
+   from scored_tweets
+   group by reply_tweet;   
+   
+   
